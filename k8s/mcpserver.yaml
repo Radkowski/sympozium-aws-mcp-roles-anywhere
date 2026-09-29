@@ -1,0 +1,77 @@
+# AWS MCP over IAM Roles Anywhere — Sympozium MCPServer.
+#
+# Fill the REPLACE_* values (the provisioning notebook prints them as
+# work/lab-outputs.json) before applying. Create the certificate Secret
+# separately (see INSTALL.ipynb / README) — never commit the private key.
+#
+# Image reference: use a versioned TAG, not @sha256. Some registries
+# do not authorize pull-by-digest with a deploy token; the
+# kubelet then reports "no basic auth credentials".
+# Build the image for the ARCHITECTURE OF YOUR CLUSTER NODES (amd64 vs arm64),
+# not your build machine — a mismatch crashes the pod with "exec format error".
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-mcp-config
+  namespace: REPLACE_NAMESPACE
+data:
+  config: |
+    [profile sympozium-mcp]
+    region = REPLACE_REGION
+    credential_process = /usr/local/bin/aws_signing_helper credential-process --certificate /certs/tls.crt --private-key /certs/tls.key --trust-anchor-arn REPLACE_TRUST_ANCHOR_ARN --profile-arn REPLACE_PROFILE_ARN --role-arn REPLACE_ROLE_ARN
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-mcp
+  namespace: REPLACE_NAMESPACE
+# Private registry: attach the pull Secret to this SA after apply, e.g.
+#   kubectl patch sa aws-mcp -n REPLACE_NAMESPACE \
+#     -p '{"imagePullSecrets":[{"name":"REPLACE_PULL_SECRET"}]}'
+# then delete the pod so it is recreated inheriting the pull secret.
+---
+apiVersion: sympozium.ai/v1alpha1
+kind: MCPServer
+metadata:
+  name: aws-mcp
+  namespace: REPLACE_NAMESPACE
+spec:
+  transportType: stdio
+  toolsPrefix: aws
+  timeout: 180
+  deployment:
+    image: REPLACE_REGISTRY/sympozium-mcp-roles-anywhere:REPLACE_TAG
+    cmd: /app/entrypoint.sh
+    serviceAccountName: aws-mcp
+    env:
+      AWS_CONFIG_FILE: /config/config
+      AWS_PROFILE: sympozium-mcp
+      AWS_REGION: REPLACE_REGION
+      AWS_OPERATIONS_REGION: REPLACE_REGION
+      MCP_ENDPOINT: https://aws-mcp.REPLACE_REGION.api.aws/mcp
+      # run_script (the tool that actually queries the account) is annotated as
+      # write-capable, so --read-only removes it entirely. Set "false" to expose
+      # it and rely on the IAM role (e.g. ViewOnlyAccess) to enforce read-only
+      # at the API layer. Set "true" to also hide write-capable tools.
+      MCP_READ_ONLY: "false"
+    volumes:
+      - name: aws-config
+        configMap:
+          name: aws-mcp-config
+      - name: aws-certificate
+        secret:
+          secretName: aws-mcp-certificate
+    volumeMounts:
+      - name: aws-config
+        mountPath: /config
+        readOnly: true
+      - name: aws-certificate
+        mountPath: /certs
+        readOnly: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
